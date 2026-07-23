@@ -24,6 +24,7 @@ ensure_package("requests")
 ensure_package("packaging")
 
 import json
+import base64
 import subprocess
 import requests
 import os
@@ -50,10 +51,10 @@ VERSION_JSON_URL = "https://raw.githubusercontent.com/DataincTech/easy/main/upda
 VERSION_TAGS_URL = "https://github.com/DataincTech/datainc-wms/tags"
 # API Contents (repo privado — requer GITHUB_TOKEN/GH_TOKEN)
 EASY_CLI_URL = (
-    "https://api.github.com/repos/datainctech/datainc-wms/contents/installer/easy.sh"
+    "https://api.github.com/repos/datainctech/datainc-wms/contents/installer/easy.sh?ref=main"
 )
 UPDATER_URL = (
-    "https://api.github.com/repos/datainctech/datainc-wms/contents/installer/updater.py"
+    "https://api.github.com/repos/datainctech/datainc-wms/contents/installer/updater.py?ref=main"
 )
 # Fallback público (mesmo host do latest.json) — sem token
 UPDATER_PUBLIC_URL = (
@@ -143,17 +144,47 @@ def resolve_app_dir():
 def github_headers():
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     headers = {
+        # raw = conteúdo do arquivo; +json = metadados (evita gravar JSON no disco)
         "Accept": "application/vnd.github.raw",
         "User-Agent": "easy-updater",
+        "X-GitHub-Api-Version": "2022-11-28",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
 
 
+def normalize_downloaded_bytes(content, url):
+    """
+    Se a API Contents devolver JSON (em vez de raw), decodifica o base64.
+    Rejeita respostas de erro da API.
+    """
+    if not content:
+        return None
+
+    text = content.decode("utf-8", errors="replace").lstrip("\ufeff")
+    stripped = text.lstrip()
+
+    if stripped.startswith("{") and ("api.github.com" in (url or "") or '"encoding"' in stripped[:500]):
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            return content
+
+        if data.get("message"):
+            raise RuntimeError(data.get("message") or "Erro na API do GitHub")
+
+        if data.get("encoding") == "base64" and data.get("content"):
+            return base64.b64decode("".join(data["content"].split()))
+
+        raise RuntimeError("Resposta da API do GitHub sem conteúdo utilizável")
+
+    return content
+
+
 def fetch_remote_bytes(urls):
     """
-    Tenta baixar bytes de uma lista de URLs (API privada → fallback público).
+    Tenta baixar bytes de uma lista de URLs (público → API privada).
     Retorna (content, url_usada) ou (None, None).
     """
     last_error = None
@@ -168,12 +199,26 @@ def fetch_remote_bytes(urls):
             if not res.content.strip():
                 last_error = f"vazio em {url}"
                 continue
-            return res.content, url
+            content = normalize_downloaded_bytes(res.content, url)
+            if not content or not content.strip():
+                last_error = f"conteúdo inválido em {url}"
+                continue
+            return content, url
         except Exception as e:
             last_error = e
             log(f"⚠️ Download falhou ({url}): {e}")
     log(f"⚠️ Nenhum mirror respondeu: {last_error}")
     return None, None
+
+
+def looks_like_shell_script(content: str) -> bool:
+    head = content.lstrip("\ufeff").lstrip()
+    return head.startswith("#!") and ("bash" in head.splitlines()[0] or "sh" in head.splitlines()[0])
+
+
+def looks_like_python_script(content: bytes) -> bool:
+    head = content.lstrip().decode("utf-8", errors="replace")
+    return head.startswith("#!") or head.startswith("import ") or head.startswith("\"\"\"") or head.startswith("'''")
 
 
 def update_easy_cli():
@@ -184,13 +229,14 @@ def update_easy_cli():
     log("🔧 Atualizando Easy CLI...")
 
     if DRY_RUN:
-        log(f"🧪 DRY-RUN: CLI não baixada de {EASY_CLI_URL}")
+        log(f"🧪 DRY-RUN: CLI não baixada de {EASY_CLI_PUBLIC_URL}")
         return
 
     app_dir = resolve_app_dir()
     dest = Path(app_dir) / "easy.sh"
 
-    remote, source = fetch_remote_bytes([EASY_CLI_URL, EASY_CLI_PUBLIC_URL])
+    # Preferir mirror público (raw) — evita gravar JSON da API Contents
+    remote, source = fetch_remote_bytes([EASY_CLI_PUBLIC_URL, EASY_CLI_URL])
     if remote is None:
         log("⚠️ Não foi possível baixar a CLI — mantendo versão atual")
         return
@@ -198,6 +244,10 @@ def update_easy_cli():
     content = remote.decode("utf-8", errors="replace")
     if not content.strip():
         log("⚠️ CLI baixada está vazia — mantendo versão atual")
+        return
+
+    if not looks_like_shell_script(content):
+        log("⚠️ CLI baixada não parece um script shell (possível JSON/HTML) — mantendo versão atual")
         return
 
     lines = []
@@ -210,6 +260,20 @@ def update_easy_cli():
             lines.append(line)
 
     text = "".join(lines)
+
+    # Valida sintaxe antes de sobrescrever a CLI do sistema
+    try:
+        subprocess.run(
+            ["bash", "-n"],
+            input=text.encode("utf-8"),
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode("utf-8", errors="replace").strip()
+        log(f"⚠️ CLI baixada com erro de sintaxe — mantendo versão atual: {detail}")
+        return
+
     dest.write_text(text)
     os.chmod(dest, 0o755)
 
@@ -235,16 +299,21 @@ def update_self():
     log("🔄 Verificando atualização do próprio updater...")
 
     if DRY_RUN:
-        log(f"🧪 DRY-RUN: updater não baixado de {UPDATER_URL}")
+        log(f"🧪 DRY-RUN: updater não baixado de {UPDATER_PUBLIC_URL}")
         return False
 
     app_dir = resolve_app_dir()
     dest = Path(app_dir) / "updater.py"
     current_path = Path(__file__).resolve()
 
-    remote, source = fetch_remote_bytes([UPDATER_URL, UPDATER_PUBLIC_URL])
+    # Preferir mirror público (raw)
+    remote, source = fetch_remote_bytes([UPDATER_PUBLIC_URL, UPDATER_URL])
     if remote is None:
         log("⚠️ Não foi possível baixar o updater — mantendo versão atual")
+        return False
+
+    if not looks_like_python_script(remote):
+        log("⚠️ Updater baixado inválido (possível JSON/HTML) — mantendo versão atual")
         return False
 
     try:
