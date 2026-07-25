@@ -295,6 +295,20 @@ all)
   $DC exec backend npm run db:all
 ;;
 
+# ========================================
+# CLONE DATABASE
+# ========================================
+clone)
+ shift 2
+
+  if [ ! -f "$APP_DIR/clone-database.sh" ]; then
+    echo "❌ clone-database.sh não encontrado em $APP_DIR"
+    exit 1
+  fi
+
+  APP_DIR="$APP_DIR" bash "$APP_DIR/clone-database.sh" "$@"
+;;
+
 *)
   echo "📦 Comandos DB:"
   echo
@@ -313,6 +327,9 @@ all)
   echo "easy db wms:functions"
   echo "easy db wms:triggers"
   echo "easy db wms:all"
+  echo "easy db clone                         (origem = \$PG_DBNAME, destino = homologacao)"
+  echo "easy db clone <destino>"
+  echo "easy db clone <destino> <origem>"
   echo
   echo "easy db all"
 ;;
@@ -610,6 +627,8 @@ echo
 echo "easy exec <comando>"
 echo "easy shell"
 echo "easy db <comando>"
+echo "easy clone db <destino>"
+echo "easy clone db <destino> <origem>"
 ;;
 
 esac
