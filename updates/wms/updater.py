@@ -270,8 +270,14 @@ def update_easy_cli():
             capture_output=True,
         )
     except subprocess.CalledProcessError as e:
-        detail = (e.stderr or b"").decode("utf-8", errors="replace").strip()
-        log(f"⚠️ CLI baixada com erro de sintaxe — mantendo versão atual: {detail}")
+        detail = (e.stderr or b"").decode("utf-8", errors="replace")
+
+        log(f"⚠️ CLI inválida:\n{detail}")
+
+        for i, line in enumerate(text.splitlines(), 1):
+            if abs(i - 637) <= 5:
+                log(f"{i:04d}: {line}")
+
         return
 
     dest.write_text(text)
