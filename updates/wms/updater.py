@@ -574,10 +574,43 @@ def get_remote_version():
 
         return {
             "version": data.get("version", "unknown"),
-            "build": data.get("build", "unknown")
+            "build": data.get("build", "unknown"),
+            "published_at": data.get("published_at"),
         }
-    except:        
+    except:
         return None
+
+
+def needs_update(local, remote):
+    """
+    Atualiza se a versão remota for maior, ou se a versão for igual
+    mas o build mudou (hotfix na mesma tag).
+    """
+    if not remote:
+        return False, "sem versão remota"
+
+    local_v = str(local.get("version") or "0")
+    remote_v = str(remote.get("version") or "0")
+    local_b = str(local.get("build") or "")
+    remote_b = str(remote.get("build") or "")
+
+    try:
+        lv = version.parse(local_v)
+        rv = version.parse(remote_v)
+    except Exception:
+        return local_v != remote_v or (remote_b and local_b != remote_b), "comparação textual"
+
+    if lv < rv:
+        return True, "versão nova"
+    if lv > rv:
+        return False, "local mais nova"
+    # mesma versão: hotfix republica a tag com build novo
+    if remote_b and local_b and remote_b != local_b:
+        return True, "mesma versão, build novo (hotfix)"
+    if remote_b and (not local_b or local_b in ("unknown", "null")):
+        return True, "build remoto presente e local ausente"
+    return False, "já atualizado"
+
 
 # -------------------------
 # Backup & Restore
@@ -626,6 +659,7 @@ def backup_database():
     cleanup_old_backups()
 
     return backup_file
+
 
 def restore_database(backup_file):
     log(f"🧯 Restaurando banco a partir de {backup_file}")
@@ -794,12 +828,16 @@ def main():
 
         local_version = get_local_version()
         remote_version = get_remote_version()
-       
 
-        log(f"💻 Versão local: {version.parse(local_version['version'])} ({local_version['build']})")
-        log(f"🌍 Versão remota: {version.parse(remote_version['version'])} ({remote_version['build']})")
+        if not remote_version:
+            raise RuntimeError("Não foi possível obter a versão remota (latest.json)")
 
-        if version.parse(local_version['version']) < version.parse(remote_version['version']):
+        log(f"💻 Versão local: {local_version['version']} ({local_version['build']})")
+        log(f"🌍 Versão remota: {remote_version['version']} ({remote_version['build']})")
+
+        should, reason = needs_update(local_version, remote_version)
+        if should:
+            log(f"📦 Motivo: {reason}")
             perform_update(remote_version)
         else:
             log(f"✔️ Sistema já está atualizado (v{local_version['version']})")
