@@ -99,6 +99,35 @@ stop)
   $DC down
 ;;
 
+build)
+  # 🔹 Rebuild das imagens (ex.: após mudar Dockerfile)
+  shift
+  BUILD_ARGS=()
+  for arg in "$@"; do
+    case "$arg" in
+      --no-cache|-n) BUILD_ARGS+=(--no-cache) ;;
+      -h|--help)
+        echo "Uso: easy build [serviço...] [--no-cache]"
+        echo
+        echo "  easy build                 # todas as imagens do compose"
+        echo "  easy build backend         # só o backend"
+        echo "  easy build backend worker --no-cache"
+        exit 0
+        ;;
+      -*)
+        echo "❌ Opção desconhecida: $arg"
+        echo "💡 Use: easy build [serviço...] [--no-cache]"
+        exit 1
+        ;;
+      *) BUILD_ARGS+=("$arg") ;;
+    esac
+  done
+  echo "🔨 Rebuild das imagens Docker"
+  $DC -f docker-compose.yml build "${BUILD_ARGS[@]}"
+  echo
+  echo "✅ Build concluído. Reinicie se necessário: easy restart"
+;;
+
 restart)
   COMPOSE_FILES=(-f docker-compose.yml)
   export DEBUG_FASTBASE="${DEBUG_FASTBASE:-false}"
@@ -604,6 +633,9 @@ echo "easy start debug"
 echo "easy start --cpu-prof"
 echo "easy start debug --cpu-prof"
 echo "easy stop"
+echo "easy build"
+echo "easy build backend"
+echo "easy build backend --no-cache"
 echo "easy restart"
 echo "easy restart debug"
 echo "easy restart --cpu-prof"
